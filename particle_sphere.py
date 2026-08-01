@@ -1,16 +1,18 @@
 #!/usr/bin/env python3
-"""Render a grainy particle sphere to a PNG.
+"""Render a grainy particle sphere to PNG and/or an animated GIF.
 
 The sphere is made from points on its surface rather than points filling its
 volume.  It includes a dark equatorial gap, bright polar clusters, depth-based
 shading, dust, soft splats, and a subtle vignette.
 
 Dependencies:
-    pip install numpy pillow
+    pip install numpy pillow        # or on Termux:  pkg install python-numpy python-pillow
 
 Example:
-    python particle_sphere.py
+    python particle_sphere.py                       # PNG only
     python particle_sphere.py -o sphere.png --size 1200 --seed 7
+    python particle_sphere.py --gif                 # PNG + animated GIF
+    python particle_sphere.py --gif --gif-frames 60 # 60-frame GIF
 """
 
 from __future__ import annotations
@@ -118,8 +120,20 @@ def add_splat(
     )
 
 
-def render(args: argparse.Namespace) -> Image.Image:
+def render(args: argparse.Namespace, rotation_degrees: float | None = None) -> Image.Image:
+    """Render a single frame of the particle sphere.
+
+    When ``rotation_degrees`` is given, use it instead of ``args.rotation``;
+    this is how the animated GIF produces many frames from a stable set of
+    surface points and grain.  A separate RNG stream is used for the grain so
+    the noise pattern does not flicker between animation frames.
+    """
     rng = np.random.default_rng(args.seed)
+    # Independent stream for image grain: keeps noise stable across animation frames.
+    grain_rng = np.random.default_rng(args.seed + 0x5A5A5A5A)
+    rotation = math.radians(
+        rotation_degrees if rotation_degrees is not None else args.rotation
+    )
     size = args.size
     height = int(round(size * args.aspect))
     height = max(64, height)
@@ -131,7 +145,7 @@ def render(args: argparse.Namespace) -> Image.Image:
 
     # Main, evenly distributed surface points.
     x, y, z = fibonacci_surface(args.points, args.gap)
-    x, y, z = rotate_y(x, y, z, math.radians(args.rotation))
+    x, y, z = rotate_y(x, y, z, rotation)
     front = np.clip((z + 1.0) * 0.5, 0.0, 1.0)
     # Back-facing points remain visible but are quieter, giving a translucent dust ball.
     brightness = 0.10 + 0.90 * np.power(front, 1.45)
@@ -140,7 +154,7 @@ def render(args: argparse.Namespace) -> Image.Image:
     # Fine random points add an irregular, grainy layer without filling the sphere.
     dust_x, dust_y, dust_z = random_surface(rng, args.dust, args.gap)
     dust_x, dust_y, dust_z = rotate_y(
-        dust_x, dust_y, dust_z, math.radians(args.rotation)
+        dust_x, dust_y, dust_z, rotation
     )
     dust_front = np.clip((dust_z + 1.0) * 0.5, 0.0, 1.0)
     dust_brightness = (0.035 + 0.23 * dust_front) * rng.uniform(
@@ -153,7 +167,7 @@ def render(args: argparse.Namespace) -> Image.Image:
         rng, args.poles, math.radians(args.pole_size)
     )
     pole_x, pole_y, pole_z = rotate_y(
-        pole_x, pole_y, pole_z, math.radians(args.rotation)
+        pole_x, pole_y, pole_z, rotation
     )
     pole_front = np.clip((pole_z + 1.0) * 0.5, 0.0, 1.0)
     pole_brightness = pole_strength * (0.55 + 0.75 * pole_front)
@@ -208,8 +222,9 @@ def render(args: argparse.Namespace) -> Image.Image:
     vignette = np.clip(1.12 - 0.42 * radial_distance * radial_distance, 0.0, 1.0)
 
     # Low-level sensor/grain noise gives the result a dusty photographic texture.
-    grain = rng.normal(0.0, args.grain, (height, size)).astype(np.float32)
-    grain *= sphere_mask * (0.25 + 0.75 * rng.random((height, size)))
+    # Uses grain_rng so the pattern is identical across animation frames.
+    grain = grain_rng.normal(0.0, args.grain, (height, size)).astype(np.float32)
+    grain *= sphere_mask * (0.25 + 0.75 * grain_rng.random((height, size)))
 
     # Slightly brighten the central body while retaining the dark equatorial gap.
     result = (core * 0.82 + glow * 0.72 + grain) * vignette
@@ -218,6 +233,23 @@ def render(args: argparse.Namespace) -> Image.Image:
     # Save as grayscale; convert to RGB for broad image-viewer compatibility.
     pixels = np.uint8(np.round(result * 255.0))
     return Image.fromarray(pixels, mode="L").convert("RGB")
+
+
+def render_animation(args: argparse.Namespace) -> list[Image.Image]:
+    """Render a list of frames that together form one full rotation.
+
+    Each frame shares the same surface points and grain noise; only the
+    rotation around the vertical axis advances by ``360 / args.gif_frames``
+    degrees.  The GIF frames use ``args.gif_size`` so the resulting file
+    stays a reasonable size.
+    """
+    gif_args = argparse.Namespace(**vars(args))
+    gif_args.size = args.gif_size
+    step = 360.0 / args.gif_frames
+    return [
+        render(gif_args, args.rotation + step * index)
+        for index in range(args.gif_frames)
+    ]
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -236,6 +268,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--offset-y", type=float, default=0.0, help="Vertical sphere offset as image fraction")
     parser.add_argument("--grain", type=float, default=0.018, help="Amount of fine image grain")
     parser.add_argument("--seed", type=int, default=12, help="Random seed for repeatable images")
+    parser.add_argument("--gif", action="store_true", help="Also produce an animated GIF that rotates the sphere a full turn")
+    parser.add_argument("--no-png", action="store_true", help="With --gif, skip writing the PNG (GIF only)")
+    parser.add_argument("--gif-output", type=Path, default=Path("particle-sphere.gif"), help="Animated GIF output path (default: particle-sphere.gif)")
+    parser.add_argument("--gif-frames", type=int, default=36, help="Number of frames in the GIF; one full rotation is split across this many frames (default: 36)")
+    parser.add_argument("--gif-fps", type=float, default=20.0, help="Playback speed of the GIF in frames per second (default: 20)")
+    parser.add_argument("--gif-size", type=int, default=400, help="Frame width for the GIF, in pixels (default: 400)")
     return parser
 
 
@@ -247,11 +285,43 @@ def main() -> None:
         raise SystemExit("--aspect must be between 0.1 and 4.0")
     if not 0.05 <= args.radius <= 0.49:
         raise SystemExit("--radius must be between 0.05 and 0.49")
+    if args.gif and args.gif_frames < 2:
+        raise SystemExit("--gif-frames must be at least 2")
+    if args.gif and args.gif_fps <= 0:
+        raise SystemExit("--gif-fps must be positive")
+    if args.gif and args.gif_size < 64:
+        raise SystemExit("--gif-size must be at least 64")
 
-    image = render(args)
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    image.save(args.output)
-    print(f"Saved {args.output} ({image.width}x{image.height})")
+    if args.gif:
+        # Always render the full-size image first so the PNG matches --size.
+        if not args.no_png:
+            image = render(args)
+            args.output.parent.mkdir(parents=True, exist_ok=True)
+            image.save(args.output)
+            print(f"Saved {args.output} ({image.width}x{image.height})")
+        # Then render the smaller frames for the animated GIF.
+        frames = render_animation(args)
+        args.gif_output.parent.mkdir(parents=True, exist_ok=True)
+        first = frames[0]
+        duration_ms = max(1, int(round(1000.0 / args.gif_fps)))
+        first.save(
+            args.gif_output,
+            save_all=True,
+            append_images=frames[1:],
+            duration=duration_ms,
+            loop=0,
+            optimize=True,
+        )
+        print(
+            f"Saved {args.gif_output} "
+            f"({len(frames)} frames @ {args.gif_fps:.0f}fps, "
+            f"{first.width}x{first.height})"
+        )
+    else:
+        image = render(args)
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        image.save(args.output)
+        print(f"Saved {args.output} ({image.width}x{image.height})")
 
 
 if __name__ == "__main__":
