@@ -39,10 +39,22 @@ except ImportError as exc:  # pragma: no cover - useful message on a new Termux 
 GOLDEN_ANGLE = math.pi * (3.0 - math.sqrt(5.0))
 
 
-def fibonacci_surface(count: int, gap: float) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Return evenly distributed points on a unit sphere, excluding the gap."""
+def fibonacci_surface(
+    count: int, gap: float, pole_bias: float = 1.0
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Return points on a unit sphere; ``pole_bias < 1`` concentrates them near the poles.
+
+    ``pole_bias=1.0`` (the default) preserves the standard uniform Fibonacci
+    distribution.  Values < 1 warp the latitude so points pile up near
+    ``|y|=1`` and thin out near the equator, producing a hemisphere-emphasised
+    look without losing the golden-angle spacing.
+    """
     index = np.arange(count, dtype=np.float64) + 0.5
-    y = 1.0 - 2.0 * index / count
+    u = 1.0 - 2.0 * index / count
+    # Power-law warp on latitude: derivative is small near |u|=1 and large near
+    # u=0, so small exponents compress points toward the poles and stretch
+    # them thin across the equator.
+    y = np.sign(u) * np.abs(u) ** pole_bias
     ring = np.sqrt(np.maximum(0.0, 1.0 - y * y))
     theta = GOLDEN_ANGLE * index
     x = ring * np.cos(theta)
@@ -53,10 +65,18 @@ def fibonacci_surface(count: int, gap: float) -> tuple[np.ndarray, np.ndarray, n
 
 
 def random_surface(
-    rng: np.random.Generator, count: int, gap: float
+    rng: np.random.Generator,
+    count: int,
+    gap: float,
+    pole_bias: float = 1.0,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Return random surface points, useful for the fine dusty texture."""
-    y = rng.uniform(-1.0, 1.0, count)
+    """Return random surface points; ``pole_bias < 1`` concentrates them near the poles.
+
+    Use the same ``pole_bias`` as ``fibonacci_surface`` so the dust layer
+    follows the main point distribution instead of dominating the equator.
+    """
+    u = rng.uniform(-1.0, 1.0, count)
+    y = np.sign(u) * np.abs(u) ** pole_bias
     theta = rng.uniform(0.0, 2.0 * math.pi, count)
     ring = np.sqrt(np.maximum(0.0, 1.0 - y * y))
     keep = np.abs(y) >= gap
@@ -143,16 +163,20 @@ def render(args: argparse.Namespace, rotation_degrees: float | None = None) -> I
     center_x = size * 0.5 + args.offset_x * size
     center_y = height * 0.5 + args.offset_y * height
 
-    # Main, evenly distributed surface points.
-    x, y, z = fibonacci_surface(args.points, args.gap)
+    # Main surface points, warped toward the poles when --pole-bias < 1.
+    x, y, z = fibonacci_surface(args.points, args.gap, args.pole_bias)
     x, y, z = rotate_y(x, y, z, rotation)
     front = np.clip((z + 1.0) * 0.5, 0.0, 1.0)
     # Back-facing points remain visible but are quieter, giving a translucent dust ball.
     brightness = 0.10 + 0.90 * np.power(front, 1.45)
+    # Latitude term: points near the poles are inherently brighter, which
+    # reinforces the visual emphasis when the distribution itself is pole-biased.
+    pole_proximity = np.abs(y)
+    brightness *= 0.6 + 0.6 * pole_proximity ** 2
     point_radius = 0.34 + 1.55 * np.power(front, 1.15)
 
     # Fine random points add an irregular, grainy layer without filling the sphere.
-    dust_x, dust_y, dust_z = random_surface(rng, args.dust, args.gap)
+    dust_x, dust_y, dust_z = random_surface(rng, args.dust, args.gap, args.pole_bias)
     dust_x, dust_y, dust_z = rotate_y(
         dust_x, dust_y, dust_z, rotation
     )
@@ -267,6 +291,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--offset-x", type=float, default=0.0, help="Horizontal sphere offset as image fraction")
     parser.add_argument("--offset-y", type=float, default=0.0, help="Vertical sphere offset as image fraction")
     parser.add_argument("--grain", type=float, default=0.018, help="Amount of fine image grain")
+    parser.add_argument("--pole-bias", type=float, default=1.0, help="Latitude warp for the main point distribution: 1.0 = uniform, <1.0 concentrates points near the poles (try 0.4-0.6)")
     parser.add_argument("--seed", type=int, default=12, help="Random seed for repeatable images")
     parser.add_argument("--gif", action="store_true", help="Also produce an animated GIF that rotates the sphere a full turn")
     parser.add_argument("--no-png", action="store_true", help="With --gif, skip writing the PNG (GIF only)")
