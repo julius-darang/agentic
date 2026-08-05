@@ -278,7 +278,8 @@ def render_animation(args: argparse.Namespace) -> list[Image.Image]:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("-o", "--output", type=Path, default=Path("particle-sphere.png"))
+    output_dir = Path(__file__).resolve().parent
+    parser.add_argument("-o", "--output", type=Path, default=output_dir / "particle-sphere.png")
     parser.add_argument("--size", type=int, default=900, help="Image width in pixels (default: 900)")
     parser.add_argument("--aspect", type=float, default=1.0, help="Height / width (default: 1.0)")
     parser.add_argument("--points", type=int, default=5200, help="Main surface points")
@@ -295,7 +296,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--seed", type=int, default=12, help="Random seed for repeatable images")
     parser.add_argument("--gif", action="store_true", help="Also produce an animated GIF that rotates the sphere a full turn")
     parser.add_argument("--no-png", action="store_true", help="With --gif, skip writing the PNG (GIF only)")
-    parser.add_argument("--gif-output", type=Path, default=Path("particle-sphere.gif"), help="Animated GIF output path (default: particle-sphere.gif)")
+    parser.add_argument("--gif-output", type=Path, default=output_dir / "particle-sphere.gif", help="Animated GIF output path (default: particle-sphere.gif)")
     parser.add_argument("--gif-frames", type=int, default=36, help="Number of frames in the GIF; one full rotation is split across this many frames (default: 36)")
     parser.add_argument("--gif-fps", type=float, default=20.0, help="Playback speed of the GIF in frames per second (default: 20)")
     parser.add_argument("--gif-size", type=int, default=400, help="Frame width for the GIF, in pixels (default: 400)")
